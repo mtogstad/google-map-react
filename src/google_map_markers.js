@@ -289,8 +289,8 @@ export default class GoogleMapMarkers extends Component {
             ? this.props.geoService.fromLatLngToContainerPixel(seLatLng)
             : this.props.geoService.project(seLatLng);
 
-          stylePtPos.width = pt2.x - pt.x;
-          stylePtPos.height = pt2.y - pt.y;
+          stylePtPos.width = sePt.x - pt.x;
+          stylePtPos.height = sePt.y - pt.y;
         }
 
         let dx = 0;
