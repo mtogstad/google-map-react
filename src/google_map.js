@@ -31,7 +31,6 @@ import detectElementResize from './utils/detectElementResize';
 const kEPS = 0.00001;
 const K_GOOGLE_TILE_SIZE = 256;
 // real minZoom calculated here _getMinZoom
-const K_IDLE_TIMEOUT = 100;
 const K_IDLE_CLICK_TIMEOUT = 300;
 const DEFAULT_MIN_ZOOM = 3;
 // Starting with version 3.32, the maps API calls `draw()` each frame during
@@ -176,8 +175,6 @@ export default class GoogleMap extends Component {
     this.boundingRect_ = null;
     this.mouseInMap_ = true;
 
-    this.dragTime_ = 0;
-    this.fireMouseEventOnIdle_ = false;
     this.updateCounter_ = 0;
 
     this.markersDispatcher_ = new MarkerDispatcher(this);
@@ -386,6 +383,7 @@ export default class GoogleMap extends Component {
   }
 
   componentDidUpdate(prevProps) {
+    if (this.dragging_) return;
     this.markersDispatcher_.emit('kON_CHANGE');
 
     if (!shallowEqual(this.props.hoverDistance, prevProps.hoverDistance)) {
@@ -697,7 +695,13 @@ export default class GoogleMap extends Component {
           }
         });
 
+        maps.event.addListener(map, 'dragstart', () => {
+          this_.dragging_ = true;
+        });
+
         maps.event.addListener(map, 'idle', () => {
+          const wasDragging = this_.dragging_;
+          this_.dragging_ = false;
           if (this.resetSizeOnIdle_) {
             this._setViewSize();
             const currMinZoom = this._computeMinZoom(
@@ -728,8 +732,6 @@ export default class GoogleMap extends Component {
 
           this._onChildMouseMove();
 
-          this_.dragTime_ = 0;
-
           const div = overlay.div;
           const overlayProjection = overlay.getProjection();
           if (div && overlayProjection) {
@@ -747,7 +749,7 @@ export default class GoogleMap extends Component {
 
           if (this_.markersDispatcher_) {
             this_.markersDispatcher_.emit('kON_CHANGE');
-            if (this_.fireMouseEventOnIdle_) {
+            if (wasDragging) {
               this_.markersDispatcher_.emit('kON_MOUSE_POSITION_CHANGE');
             }
           }
@@ -773,10 +775,8 @@ export default class GoogleMap extends Component {
           this_.markersDispatcher_.emit('kON_MOUSE_POSITION_CHANGE');
         });
 
-        maps.event.addListener(map, 'drag', () => {
-          this_.dragTime_ = new Date().getTime();
-          this_._onDrag();
-        });
+        maps.event.addListener(map, 'drag', this_._onDrag);
+
         // user choosing satellite vs roads, etc
         maps.event.addListener(map, 'maptypeid_changed', () => {
           this_._onMapTypeIdChange(map.getMapTypeId());
@@ -891,6 +891,7 @@ export default class GoogleMap extends Component {
 
   _onMapMouseMove = e => {
     if (!this.mouseInMap_) return;
+    if (this.dragging_) return;
 
     const currTime = new Date().getTime();
     const K_RECALC_CLIENT_RECT_MS = 50;
@@ -915,38 +916,31 @@ export default class GoogleMap extends Component {
     this.mouse_.lng = latLng.lng;
 
     this._onChildMouseMove();
-
-    if (currTime - this.dragTime_ < K_IDLE_TIMEOUT) {
-      this.fireMouseEventOnIdle_ = true;
-    } else {
-      this.markersDispatcher_.emit('kON_MOUSE_POSITION_CHANGE');
-      this.fireMouseEventOnIdle_ = false;
-    }
+    this.markersDispatcher_.emit('kON_MOUSE_POSITION_CHANGE');
   };
 
   // K_IDLE_CLICK_TIMEOUT - looks like 300 is enough
   _onClick = (...args) =>
+    !this.dragging_ &&
     this.props.onClick &&
     !this.childMouseDownArgs_ &&
     new Date().getTime() - this.childMouseUpTime_ > K_IDLE_CLICK_TIMEOUT &&
-    this.dragTime_ === 0 &&
     this.props.onClick(...args);
 
   _onMapClick = event => {
+    if (this.dragging_) return;
     if (this.markersDispatcher_) {
       // support touch events and recalculate mouse position on click
       this._onMapMouseMove(event);
-      const currTime = new Date().getTime();
-      if (currTime - this.dragTime_ > K_IDLE_TIMEOUT) {
-        if (this.mouse_) {
-          this._onClick({
-            ...this.mouse_,
-            event,
-          });
-        }
 
-        this.markersDispatcher_.emit('kON_CLICK', event);
+      if (this.mouse_) {
+        this._onClick({
+          ...this.mouse_,
+          event,
+        });
       }
+
+      this.markersDispatcher_.emit('kON_CLICK', event);
     }
   };
 
@@ -959,14 +953,12 @@ export default class GoogleMap extends Component {
   };
 
   _onMapMouseDown = event => {
+    if (this.dragging_) return;
     if (this.markersDispatcher_) {
-      const currTime = new Date().getTime();
-      if (currTime - this.dragTime_ > K_IDLE_TIMEOUT) {
-        // Hovered marker detected at mouse move could be deleted at mouse down time
-        // so it will be good to force hovered marker recalculation
-        this._onMapMouseMove(event);
-        this.markersDispatcher_.emit('kON_MDOWN', event);
-      }
+      // Hovered marker detected at mouse move could be deleted at mouse down time
+      // so it will be good to force hovered marker recalculation
+      this._onMapMouseMove(event);
+      this.markersDispatcher_.emit('kON_MDOWN', event);
     }
   };
 
@@ -989,6 +981,7 @@ export default class GoogleMap extends Component {
       (center.length === 2 && isNumber(center[0]) && isNumber(center[1])));
 
   _onBoundsChanged = (map, maps, callExtBoundsChange) => {
+    if (this.dragging_) return;
     if (map) {
       const gmC = map.getCenter();
       this.geoService_.setView([gmC.lat(), gmC.lng()], map.getZoom(), 0);
